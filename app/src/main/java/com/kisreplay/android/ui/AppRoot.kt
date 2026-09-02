@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.kisreplay.android.ui
 
 import android.net.Uri
@@ -15,7 +17,6 @@ import androidx.compose.ui.unit.dp
 import com.kisreplay.android.AppState
 import com.kisreplay.android.MainViewModel
 import com.kisreplay.android.SourceMode
-import com.kisreplay.android.data.*
 import kotlinx.coroutines.delay
 
 private enum class Page(val label: String) { REPLAY("Replay"), LEARNING("학습자료"), DATA("데이터"), SETTINGS("설정") }
