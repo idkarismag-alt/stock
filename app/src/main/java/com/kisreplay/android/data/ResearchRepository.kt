@@ -30,13 +30,13 @@ class ResearchRepository(private val context: Context) {
 
     fun dailyBars(symbol: String, day: String): List<Candle> {
         val local = androidCache.bars(symbol, "D", null, 800)
-        if (local.isNotEmpty()) return local
+        if (local.isNotEmpty()) return local.filterToDay(day)
         val imported = LegacyDbReader(activePack).longBars(symbol, "D", 800)
-        if (imported.isNotEmpty()) return imported
+        if (imported.isNotEmpty()) return imported.filterToDay(day)
         if (!hasCredentials()) return emptyList()
         val fetched = api.fetchDaily(symbol, day)
         if (fetched.isNotEmpty()) androidCache.save(symbol, "D", fetched)
-        return fetched
+        return fetched.filterToDay(day)
     }
 
     fun minuteBars(symbol: String, day: String): Pair<List<Candle>, String> {
@@ -49,4 +49,9 @@ class ResearchRepository(private val context: Context) {
         if (fetched.isNotEmpty()) androidCache.save(symbol, "1m", fetched)
         return fetched to if (fetched.isNotEmpty()) "키움 API 자동보완 → Android 캐시 저장" else "분봉 조회 결과 없음"
     }
+}
+
+private fun List<Candle>.filterToDay(day: String): List<Candle> = filter { c ->
+    val d = c.time.filter(Char::isDigit).take(8)
+    d.length < 8 || d <= day
 }
