@@ -23,9 +23,11 @@ data class AppState(
     val moverRows: List<MoverRow> = emptyList(),
     val selectedSymbol: String = "",
     val selectedName: String = "",
+    val selectedStartTime: String = "",
     val dailyBars: List<Candle> = emptyList(),
     val minuteBars: List<Candle> = emptyList(),
     val minuteSource: String = "",
+    val simTrades: List<SimTrade> = emptyList(),
     val learningZones: List<LearningZone> = emptyList(),
     val highRule: Boolean = true,
     val threshold: Double = 15.0,
@@ -34,6 +36,7 @@ data class AppState(
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = ResearchRepository(app)
+    private val tradeStore = SimTradeStore(app)
     private val _state = MutableStateFlow(AppState(pack = repo.activePack, credentialsSaved = repo.hasCredentials()))
     val state = _state.asStateFlow()
 
@@ -46,8 +49,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setSource(source: SourceMode) {
-        _state.value = _state.value.copy(source = source, selectedSymbol = "", dailyBars = emptyList(), minuteBars = emptyList())
+        _state.value = _state.value.copy(
+            source = source,
+            selectedSymbol = "",
+            selectedName = "",
+            selectedStartTime = "",
+            dailyBars = emptyList(),
+            minuteBars = emptyList(),
+            simTrades = emptyList(),
+        )
         refreshDefault()
+    }
+
+    fun backToList() {
+        _state.value = _state.value.copy(
+            selectedSymbol = "",
+            selectedName = "",
+            selectedStartTime = "",
+            dailyBars = emptyList(),
+            minuteBars = emptyList(),
+            minuteSource = "",
+            simTrades = emptyList(),
+            message = if (_state.value.source == SourceMode.RANK0198) "유효 급상승 목록" else "15% 이상 목록",
+        )
     }
 
     fun setDay(day: String) { _state.value = _state.value.copy(day = day.filter { it.isDigit() }.take(8)) }
@@ -60,22 +84,71 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (day.length != 8) return@io
         if (s.source == SourceMode.RANK0198) {
             val rows = repo.rankRows(day)
-            _state.value = _state.value.copy(rankRows = rows, moverRows = emptyList(), message = "0198 ${rows.size}종목")
+            _state.value = _state.value.copy(
+                rankRows = rows,
+                moverRows = emptyList(),
+                selectedSymbol = "",
+                selectedName = "",
+                selectedStartTime = "",
+                message = "유효 급상승 ${rows.size}종목 · N 또는 실제 순위상승 +10 이상"
+            )
         } else {
             val rows = repo.moverRows(day, s.highRule, s.threshold)
-            _state.value = _state.value.copy(moverRows = rows, rankRows = emptyList(), message = "15% 목록 ${rows.size}종목")
+            _state.value = _state.value.copy(
+                moverRows = rows,
+                rankRows = emptyList(),
+                selectedSymbol = "",
+                selectedName = "",
+                selectedStartTime = "",
+                message = "15% 목록 ${rows.size}종목"
+            )
         }
     }
 
-    fun selectSymbol(symbol: String, name: String) = io("차트 준비 중…") {
+    fun selectSymbol(symbol: String, name: String, startTime: String = "") = io("차트 준비 중…") {
         val day = _state.value.day
-        _state.value = _state.value.copy(selectedSymbol = symbol, selectedName = name, dailyBars = emptyList(), minuteBars = emptyList())
+        _state.value = _state.value.copy(
+            selectedSymbol = symbol,
+            selectedName = name,
+            selectedStartTime = startTime,
+            dailyBars = emptyList(),
+            minuteBars = emptyList(),
+            simTrades = emptyList(),
+        )
         val daily = repo.dailyBars(symbol, day)
         val (minutes, src) = repo.minuteBars(symbol, day)
-        _state.value = _state.value.copy(dailyBars = daily, minuteBars = minutes, minuteSource = src, message = "$name $src")
+        val trades = tradeStore.trades(day, symbol)
+        _state.value = _state.value.copy(
+            dailyBars = daily,
+            minuteBars = minutes,
+            minuteSource = src,
+            simTrades = trades,
+            message = "$name · $src"
+        )
     }
 
-    fun refreshLearning() = io("학습자료 불러오는 중…") { _state.value = _state.value.copy(learningZones = repo.learningZones()) }
+    fun recordTrade(side: String, candle: Candle, quantity: Int) = io(if (side == "BUY") "가상 매수 기록 중…" else "가상 매도 기록 중…") {
+        val s = _state.value
+        require(s.selectedSymbol.isNotBlank()) { "선택 종목이 없습니다" }
+        require(quantity > 0) { "수량은 1주 이상이어야 합니다" }
+        tradeStore.add(s.day, s.selectedSymbol, s.selectedName, candle.time, side, candle.close, quantity)
+        val trades = tradeStore.trades(s.day, s.selectedSymbol)
+        _state.value = _state.value.copy(
+            simTrades = trades,
+            message = "${if (side == "BUY") "매수" else "매도"} ${quantity}주 @ ${candle.close} · ${candle.time.takeLast(6)}"
+        )
+    }
+
+    fun clearSelectedTrades() = io("가상매매 초기화 중…") {
+        val s = _state.value
+        if (s.selectedSymbol.isBlank()) return@io
+        tradeStore.clear(s.day, s.selectedSymbol)
+        _state.value = _state.value.copy(simTrades = emptyList(), message = "${s.selectedName} 가상매매 초기화 완료")
+    }
+
+    fun refreshLearning() = io("학습자료 불러오는 중…") {
+        _state.value = _state.value.copy(learningZones = repo.learningZones())
+    }
 
     fun saveCredentials(appKey: String, secret: String) {
         repo.saveCredentials(appKey, secret)
@@ -99,9 +172,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun io(message: String, block: suspend () -> Unit) {
         viewModelScope.launch {
             if (message.isNotBlank()) _state.value = _state.value.copy(busy = true, message = message)
-            try { withContext(Dispatchers.IO) { block() } }
-            catch (e: Exception) { _state.value = _state.value.copy(message = e.message ?: e.javaClass.simpleName) }
-            finally { _state.value = _state.value.copy(busy = false) }
+            try {
+                withContext(Dispatchers.IO) { block() }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(message = e.message ?: e.javaClass.simpleName)
+            } finally {
+                _state.value = _state.value.copy(busy = false)
+            }
         }
     }
 }
